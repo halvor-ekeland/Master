@@ -1,0 +1,59 @@
+---
+title: "mash distance"
+author: "Halvor Ekeland"
+date: "28 2 2022"
+output: html_document
+---
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+```
+
+
+```{r}
+sample_overview_path <- "/mnt/users/haek/Master/mixes/sample_overview_4.xlsx"
+
+sample_meta <- read_xlsx(sample_overview_path,sheet = "species_and_tax_id") %>%
+  select(-c("tax_id","Common_name")) %>%
+  mutate(query = genome_filename) %>%
+  mutate(file = genome_filename) %>%
+  select(!genome_filename)
+```
+
+
+```{r}
+genomes_tbl <- read.table("/mnt/users/haek/Master/art/genomes_table3.txt", sep = "\t", header = T) %>%
+  select(-"coverage")
+distance_matrix <- read.table("/mnt/SCRATCH/haek/mash/dist.txt") %>% set_names(c("file", "query", "dist", "p", "n")) %>%
+  select(-c("p","n")) %>%
+  mutate(file = str_remove(basename(file),"/mnt/SCRATCH/haek/genomes/")) %>%
+  mutate(query = str_remove(basename(query),"/mnt/SCRATCH/haek/genomes/")) 
+  
+distance_matrix <- full_join(distance_matrix,select(sample_meta,c("query","species")),by = "query") %>%
+  rename(query_name = species) %>%
+  full_join(select(sample_meta,c("file","species")),by="file") %>%
+  rename(file_name = species) %>%
+  select(-c("file","query")) %>%
+  mutate(query_name = str_replace(query_name,"_"," ")) %>%
+  mutate(file_name = str_replace(file_name,"_"," "))
+  
+```
+
+```{r}
+tree_wide <- pivot_wider(distance_matrix,names_from = query_name, values_from = dist) %>% column_to_rownames(var = "file_name")
+
+mash_plot <- ggplot(distance_matrix, aes(x=query_name,y=file_name,fill=dist)) +
+  geom_tile()+
+  scale_fill_gradient(low = "blue",high = "yellow") +
+  coord_fixed() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust=1)) + 
+  xlab(" ") +
+  ylab(" ") + 
+  labs(title= "Distance matrix for the 21 species")
+
+
+ggsave("/mnt/users/haek/Master/results/mash_plot.png",mash_plot)
+save(distance_matrix,file =  "/mnt/users/haek/Master/results/distance_matrix.Rdata")
+```
+

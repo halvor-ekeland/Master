@@ -1,0 +1,298 @@
+---
+title: "15_new"
+author: "Halvor Ekeland"
+date: "24 3 2022"
+output: html_document
+---
+
+```{r packages, message=FALSE}
+library(tidyverse)
+library(readxl)
+library(vegan)
+library(pals)
+
+load("/mnt/users/haek/Master/annet/functions.RData")
+
+
+```
+
+```{r}
+
+sample_overview_path <- "/mnt/users/haek/Master/mixes/sample_overview_3.xlsx"
+
+samples_list <- read_xlsx(sample_overview_path,"simulated_to_new")
+samples_list_hilde <- read_xlsx(sample_overview_path,"hilde_to_new")
+samples_list_jamie <- read_xlsx(sample_overview_path,"jamie_to_new")
+
+results_dir <- "/mnt/SCRATCH/haek/results/KB_simulated_reads/" #directory with results, must end with /
+results_dir_hilde <- "/mnt/SCRATCH/haek/results/KB_real_iontorrent/"
+results_dir_jamie <- "/mnt/SCRATCH/haek/results/KB_cornell/"
+
+
+results <- data_frame() #empty dataframe to be filled with results 
+
+for (j in 1:nrow(samples_list)) {
+  sample <- read.table(paste0(results_dir,samples_list[j,"filename"]),sep = "\t" , header = T) %>% #reading in results
+    mutate(sample = paste0(samples_list[j,"sample"])) %>% #greating column with sample id
+    rename("tax_id" = taxonomy_id) %>% #reanmin tax_id column
+    mutate(origin = "simulated")
+
+  results <- rbind(results,sample) #combining results for all 16 samples to one df
+  
+}
+
+for (j in which(samples_list_hilde$sample %in% samples_list$sample)) {
+  sample <- read.table(paste0(results_dir_hilde,samples_list_hilde[j,"filename"]),sep = "\t" , header = T) %>% #reading in results
+    mutate(sample = paste0(samples_list_hilde[j,"sample"])) %>% #greating column with sample id
+    rename(tax_id = taxonomy_id,) %>% #reanmin tax_id column
+    mutate(origin = "hilde")
+
+  results <- rbind(results,sample) #combining results for all 16 samples to one df
+}
+
+
+for (j in which(samples_list_jamie$sample %in% samples_list$sample)) {
+  sample <- read.table(paste0(results_dir_jamie,samples_list_jamie[j,"filename"]),sep = "\t" , header = T) %>% #reading in results
+    mutate(sample = paste0(samples_list_jamie[j,"sample"])) %>% #greating column with sample id
+    rename(tax_id = taxonomy_id,) %>% #reanmin tax_id column
+    mutate(origin = "jamie")
+
+  results <- rbind(results,sample) #combining results for all 16 samples to one df
+}
+```
+
+```{r chosing what dataset to analyse and compare}
+data_set <- "simulated" #select the dataset to preforme the anlysis on, simulated, jamie or hilde 
+
+results <- filter(results,origin == data_set) %>% 
+  select(!origin) %>%
+  rename(species = name)
+```
+
+
+```{r data prosessing}
+samples_meta <- read_xlsx(sample_overview_path,sheet = "overview")
+species_meta <- read_xlsx(sample_overview_path,sheet = "species_and_tax_id")
+mixes <- read_xlsx(sample_overview_path,sheet = 2) %>% full_join(species_meta,by="species")
+
+true_abd <- results %>% group_by(sample) %>% #greating table of reads in each sample
+  summarise(true_abd = sum(new_est_reads)) #counting total number of classifyed reads for each sample
+
+
+mixes_long <- pivot_longer(mixes,cols = samples_list$sample,names_to = "sample", values_to = "relativ_abd") %>% 
+  mutate(true_fraction = relativ_abd/100) #finding the realtive abd as a fraction of the total 
+mixes_long <- full_join(mixes_long,true_abd, by = "sample") %>%
+  mutate(true_abundance = true_fraction*true_abd) %>% #if we are working with samples with siumalted reads with 1 mil reads in each sample
+  select(!true_abd) %>%
+  mutate(species = str_replace(species,"_"," "))
+
+
+joined_table <- full_join(mixes_long,results,by = c("tax_id","sample","species")) %>% 
+  select(-added_reads,-kraken_assigned_reads,-taxonomy_lvl) %>% #removing exes columns
+  mutate(fraction_total_reads=replace_na(fraction_total_reads,0)) %>% #creating column for fraction of reads and turning NAs to 0
+  mutate(new_est_reads=replace_na(new_est_reads,0)) #removing NAs from speices that appear inn the mixes but not in bracken results 
+joined_table[is.na(joined_table)] <- 0
+
+mixes_wide <- select(mixes_long,c("sample","true_abundance","species")) %>%
+  mutate(species = str_replace(species,"_"," ")) %>%
+  pivot_wider(names_from = species,values_from = true_abundance) %>%
+  mutate(from = "gold")
+
+results_wide <- select(results,c("sample","new_est_reads","species")) %>%
+  pivot_wider(names_from = species,values_from = new_est_reads) %>%
+  mutate(from = "real")
+
+joined_wide <- bind_rows(mixes_wide,results_wide)
+joined_wide[is.na(joined_wide)] <- 0
+```
+
+
+
+```{r sample summary}
+
+sample_summary <- data_frame()
+
+for (i in unique(results$sample)) {
+  n <- 10^6 
+  clas_frac <-  sum(select(filter(results,sample == i),new_est_reads))/n # fracion for reads in sample classified by KB
+  Kraken_frac <- sum(select(filter(results,sample == i),kraken_assigned_reads))/sum(select(filter(results,sample == i),new_est_reads)) #how many classifications at rank s were done by kraken2
+  
+  fill <- data_frame(sample = i,fraction_reads_classified = clas_frac,fraction_classified_Kraken2 = Kraken_frac,differanse = fraction_reads_classified-fraction_classified_Kraken2)
+  sample_summary <- rbind(sample_summary,fill)
+  
+  
+  #rm(fill,n,clas_frac,Kraken_frac)
+  
+}
+
+```
+
+
+```{r graph titles}
+graph_title <- ifelse(data_set == "hilde", "ion torrent", 
+    ifelse(data_set == "simulated", "simulated",
+    ifelse(data_set == "jamie", "illumina")))
+
+
+paste0("Bray-Curtis dissimilarity for ",graph_title," samples")
+```
+
+
+
+```{r Purity completeness and BCD, eval=T}
+results_compiled <- data_frame()
+results_comp <- data_frame()
+
+for (i in unique(results$sample)) {
+  pr_sample_results <- filter(joined_table,sample == i) #extracting one sample 
+  pr_sample_bray <- select(filter(joined_wide,sample == i),-c("sample","from"))
+  
+
+  prcnt_10e1 <- round(as.numeric(filter(true_abd,sample == i)[1,2])*10^-1,0)
+  prcnt_10e2 <- round(as.numeric(filter(true_abd,sample == i)[1,2])*10^-2,0)
+  prcnt_10e3 <- round(as.numeric(filter(true_abd,sample == i)[1,2])*10^-3,0)
+  prcnt_10e4 <- round(as.numeric(filter(true_abd,sample == i)[1,2])*10^-4,0)
+  prcnt_10e5 <- round(as.numeric(filter(true_abd,sample == i)[1,2])*10^-5,0)
+  
+  
+  pur_0 <- round(purity(pr_sample_results$true_abundance,pr_sample_results$new_est_reads,threshold = 0),4) #using purity function
+  pur_10e5 <- round(purity(pr_sample_results$true_abundance,pr_sample_results$new_est_reads,threshold = prcnt_10e5),4)
+  pur_10e4 <- round(purity(pr_sample_results$true_abundance,pr_sample_results$new_est_reads, threshold = prcnt_10e4),4) #using purity function with threshold 
+  pur_10e3 <- round(purity(pr_sample_results$true_abundance,pr_sample_results$new_est_reads, threshold = prcnt_10e3),4) #using purity function with threshold 
+  pur_10e2 <- round(purity(pr_sample_results$true_abundance,pr_sample_results$new_est_reads, threshold = prcnt_10e2),4) #using purity function with threshold
+  pur_10e1 <- round(purity(pr_sample_results$true_abundance,pr_sample_results$new_est_reads, threshold = prcnt_10e1),4) #using purity function with threshold
+  
+  
+  comp_0 <- round(completeness(pr_sample_results$true_abundance,pr_sample_results$new_est_reads,threshold = 0),4) #using purity function
+  comp_10e5 <- round(completeness(pr_sample_results$true_abundance,pr_sample_results$new_est_reads,threshold = prcnt_10e5),4)
+  comp_10e4 <- round(completeness(pr_sample_results$true_abundance,pr_sample_results$new_est_reads, threshold = prcnt_10e4),4) #using purity function with threshold 
+  comp_10e3 <- round(completeness(pr_sample_results$true_abundance,pr_sample_results$new_est_reads, threshold = prcnt_10e3),4) #using purity function with threshold 
+  comp_10e2 <- round(completeness(pr_sample_results$true_abundance,pr_sample_results$new_est_reads, threshold = prcnt_10e2),4) #using purity function with threshold
+  comp_10e1 <- round(completeness(pr_sample_results$true_abundance,pr_sample_results$new_est_reads, threshold = prcnt_10e1),4) #using purity function with threshold
+  
+  comp <- completeness(pr_sample_results$true_abundance,pr_sample_results$new_est_reads) #using completeness function
+  
+  BCD <- vegdist(pr_sample_bray,method = "bray")
+  
+  
+  
+  fill <- c(i,pur_0,pur_10e5,pur_10e4,pur_10e3,pur_10e2,pur_10e1,comp,BCD) #creating vector with results for sample 
+  results_compiled <- rbind(results_compiled,fill) #adding to the results table for all samples 
+  
+  fill_comp <- c(i,comp_0,comp_10e5,comp_10e4,comp_10e3,comp_10e2,comp_10e1)
+  results_comp <- rbind(results_comp,fill_comp)
+  
+  #rm(pr_sample_results)
+  rm(fill,fill_comp)
+}
+
+colnames(results_compiled) <- c("sample","0","0.00001","0.0001","0.001","0.01","0.1","completeness","BCD") #chaniging column names for results table
+colnames(results_comp) <- c("sample","0","0.00001","0.0001","0.001","0.01","0.1") #chaniging column names for results table
+
+res_com_long <- select(results_compiled,-c("completeness","BCD")) %>% 
+  pivot_longer(cols = !sample,names_to = "threshold",values_to = "purity")
+
+res_comp_long <- results_comp %>% pivot_longer(cols = !sample,names_to = "threshold",values_to = "completeness")
+
+pur_plot <- ggplot(res_com_long,aes(x=threshold,y=purity, group = sample))+
+  geom_line(aes(color = sample),position=position_jitter(w=0.04, h=0.04)) +
+  xlab("Threshold as fraction of total number of reads classified for sample") +
+  ylab("Purity") +
+  labs(title = paste0("Purity for ",graph_title," samples"))+ 
+  scale_color_manual(values = pals::glasbey(n=length(unique(results$sample))))
+pur_plot
+
+comp_plot <- ggplot(res_comp_long,aes(x=threshold,y=completeness, group = sample))+
+  geom_line(aes(color = sample),position=position_jitter(w=0.04, h=0.04)) +
+  xlab("Threshold as fraction of total number of reads classified for sample") +
+  ylab("Completeness") +
+  labs(title = paste0("Completeness for ",graph_title," samples"))+ 
+  scale_color_manual(values = pals::glasbey(n=length(unique(results$sample))))
+
+comp_plot
+
+# comple_bar <- ggplot(results_compiled,aes(x = sample,y = completeness))+
+#   geom_col(aes(fill = sample))+
+#   scale_x_discrete(guide = guide_axis(angle = 90)) +
+#   xlab("Sample") + 
+#   ylab("Completeness") +
+#   labs(title = paste0("Completeness for ",graph_title," samples"))+ 
+#   scale_fill_manual(values = pals::glasbey(n=length(unique(results$sample))))
+# 
+# comple_bar
+
+
+BCD_bar <- ggplot(results_compiled,aes(x = sample,y = BCD))+
+  geom_col(aes(fill = sample))+
+  scale_x_discrete(guide = guide_axis(angle = 90))+
+  xlab("Sample") + 
+  labs(title = paste0("Bray-Curtis dissimilarity for ",graph_title," samples"))+ 
+  scale_fill_manual(values = pals::glasbey(n=length(unique(results$sample))))
+
+BCD_bar
+```
+
+
+```{r saving plots, eval=T}
+plot_path <- "/mnt/users/haek/Master/results/results_plots_2/"
+ecxel_path <- "/mnt/users/haek/Master/results/summary_excel_files/"
+
+
+Purity_file_name <- paste0(plot_path,data_set,"_purity_plot.png")
+comp_file_name <- paste0(plot_path,data_set,"_completeness_plot.png")
+pca_file_name <- paste0(plot_path,data_set,"_pca_plot.png")
+BCD_file_name <- paste0(plot_path,data_set,"_BCD_plot.png")
+excel_name <- paste0(ecxel_path,data_set,"_results_compiled.xlsx")
+
+results_export <- list("purity, completeness and BCD" = results_compiled, "reads in samples" = true_abd, "KB classification summary" = sample_summary, "restults for samples" = results_wide)
+
+
+ggsave(Purity_file_name,pur_plot)
+ggsave(comp_file_name,comp_plot)
+ggsave(BCD_file_name,BCD_bar)
+#ggsave(pca_file_name,pca_plot)
+
+write_xlsx(results_export,excel_name)
+
+```
+
+
+```{r results for KB to xlsx, eval = T}
+KB_results_wide_nreads <- select(joined_table,c("sample","new_est_reads","species")) %>%
+  pivot_wider(names_from = species,values_from = new_est_reads)
+ 
+KB_results_wide_nreads <- data.frame(t(KB_results_wide_nreads)) %>% rownames_to_column(var = "species")
+names(KB_results_wide_nreads) <- KB_results_wide_nreads[1,]
+KB_results_wide_nreads <- KB_results_wide_nreads[-1,]
+
+
+KB_results_wide_freq <- select(joined_table,c("sample","fraction_total_reads","species")) %>%
+  pivot_wider(names_from = species,values_from = fraction_total_reads)
+ 
+KB_results_wide_freq <- data.frame(t(KB_results_wide_freq)) %>% rownames_to_column(var = "species")
+names(KB_results_wide_freq) <- KB_results_wide_freq[1,]
+KB_results_wide_freq <- KB_results_wide_freq[-1,]
+
+KB_results_wide_xlsx <- list("realtiv_abundce" = KB_results_wide_freq, "abundance" = KB_results_wide_nreads)
+
+write_xlsx(KB_results_wide_xlsx,paste0(ecxel_path,data_set,"_","KB_results_wide.xlsx"))
+
+```
+
+```{r}
+
+filter(joined_table, sample=="sample_07")
+```
+
+```{r}
+true_abd <- pr_sample_results$true_abundance
+predicted_abd <- pr_sample_results$new_est_reads
+  true <- which(true_abd > 1) #creates vector of true/false based on the number of actuall reads in the mix are above ore below the treashold
+  true
+  predicted <- which(predicted_abd > 525816) #creates vector of true/false based on the number of KB-classified reads in the mix are above ore below the treashold
+  predicted
+  TP <- sum(true %in% predicted) #compares and sums the true/false vectors for species that were classifed correcly 
+  FN <- sum(!(true %in% predicted)) #compars and sums the places where true reads to a species that is not precent in the predicted sample
+as.numeric(TP / (TP + FN))
+```
+

@@ -1,0 +1,209 @@
+---
+title: "diff_quality_results"
+author: "Halvor Ekeland"
+date: "20 2 2022"
+output: html_document
+---
+
+```{r pakker, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(microseq)
+library(microclass)
+library(pals)
+
+load("/mnt/users/haek/Master/annet/functions.RData")
+
+
+```
+
+```{r reading in results, warning=FALSE, message=FALSE}
+
+samples_list <- read.table("/mnt/users/haek/Master/results/diff_quality/diff_q_results_list.txt", sep = "\t", col.names = "filename") %>% #getting list of files with results
+  mutate(sample = substr(filename,1,nchar(filename)-24)) %>% #creating column with sample id
+  mutate(confidence = str_extract(basename(filename),"q...")) %>% mutate(confidence = str_remove(basename(confidence),"q"))
+
+results_dir <- "/mnt/SCRATCH/haek/results/KB_confidence/" #directory with results 
+results <- data_frame() #empty dataframe to be filled with results
+
+for (j in 1:nrow(samples_list)) {
+  sample <- read.table(paste0(results_dir,samples_list[j,1]), sep = "\t", header = T) %>% #reading in results
+    mutate(sample = paste0(samples_list[j,2])) %>% #greating column with sample id
+    dplyr::rename(tax_id = taxonomy_id) %>% #reanmin tax_id column 
+    mutate(confidence = (samples_list[j,"confidence"]))
+
+  results <- rbind(results,sample) #combining results for all 16 samples to one df
+  rm(sample)
+}
+
+
+
+```
+
+
+```{r}
+sample_overview_path <- "/mnt/users/haek/Master/mixes/sample_overview_3.xlsx"
+
+species_meta <- read_xlsx(sample_overview_path,sheet = "species_and_tax_id")
+mixes <- full_join(species_meta,read_xlsx(sample_overview_path,sheet = 2),by="species")
+
+true_abd <- results %>% group_by(sample,confidence) %>% #greating table of reads in each sample
+  summarise(abd = sum(new_est_reads)) #counting total number of classifyed reads for each sample
+
+mixes_long <- pivot_longer(mixes,cols = -c(species,tax_id),names_to = "sample", values_to = "relativ_abd") %>% 
+  mutate(relativ_abd = relativ_abd/100) %>%
+  rename("name" = species) %>%
+  mutate(name = str_replace(name,"_"," "))
+
+
+mixes_qual <- tibble() 
+for (i in unique(mixes_long$sample)) {
+  for (j in unique(results$confidence)){
+   mix <- filter(mixes_long,sample == i) %>% mutate(confidence = j)
+   mixes_qual <- rbind(mixes_qual,mix) 
+   rm(mix)
+
+  }
+}
+rm(j,i)
+
+mixes_qual <- full_join(mixes_qual,true_abd,by=c("sample","confidence")) %>%
+  mutate(abd = relativ_abd*abd)
+```
+
+
+```{r combining to one table}
+
+joined_table <- full_join(mixes_qual,results,by = c("tax_id","sample","confidence","name")) %>% 
+  select(-added_reads,-kraken_assigned_reads,-taxonomy_lvl) %>% #removing exes columns
+  mutate(fraction_total_reads=replace_na(fraction_total_reads,0)) %>% #creating column for fraction of reads and turning NAs to 0
+  mutate(new_est_reads=replace_na(new_est_reads,0)) #removing NAs from speices that appear inn the mixes but not in bracken results 
+```
+
+```{r}
+purity_completeness <- data_frame()
+
+for (q in unique(results$confidence)) {
+  for (s in unique(samples_list$sample)) {
+    pr_sample_results <- filter(joined_table,sample == s,confidence == q)
+    pur <- purity(pr_sample_results$abd,pr_sample_results$new_est_reads)
+    comp <- completeness(pr_sample_results$abd,pr_sample_results$new_est_reads)
+    fill <- c(s,q,pur,comp)
+    purity_completeness <- rbind(purity_completeness,fill)
+    
+    rm(fill)
+  }
+}
+colnames(purity_completeness) <- c("sample","confidence","purity","completeness")
+
+
+purity_completeness[,"purity"] <- as.numeric(purity_completeness[,"purity"]) #convert from character to numeric 
+```
+
+
+
+
+
+```{r lineplot for purity, eval=T}
+
+purity_plot <- ggplot(purity_completeness,aes(y = purity,x=confidence,group = sample))+
+  geom_line(aes(color = sample)) +
+  xlab("Confidence") + 
+  ylab("Purity")
+
+purity_plot
+ggsave("/mnt/users/haek/Master/results/diff_quality/purity_plot_diff_q.png",purity_plot)
+
+completeness_plot <- ggplot(purity_completeness,aes(y = completeness,x=confidence,group = sample))+
+  geom_line(aes(color = sample),position=position_jitter(w=0.04, h=0.04)) +
+  xlab("Confidence") + 
+  ylab("Completeness")
+
+completeness_plot
+ggsave("/mnt/users/haek/Master/results/diff_quality/comp_plot_diff_q.png",completeness_plot)
+
+abd_plot <- ggplot(true_abd,aes(y = abd,x=confidence,group = sample))+
+  geom_line(aes(color = sample)) +
+  xlab("confidence") + 
+  ylab("Reads classified") + 
+  labs(title = "Change in number of reads classified as confidence is changed")
+
+abd_plot
+ggsave("/mnt/users/haek/Master/results/diff_quality/abd_plot_diff_q.png",abd_plot)
+```
+
+
+```{r data for pca and spree}
+
+results_wide <- pivot_wider(results,id_cols = c("sample","confidence"),values_from = new_est_reads,names_from = name)
+results_wide[is.na(results_wide)] <- 0
+
+mixes_long <- mixes_long %>% mutate(abd = relativ_abd*10^6)
+mixes_wide <- pivot_wider(mixes_long, id_cols = c("sample"),values_from = abd,names_from = name) %>%
+  mutate(confidence = "gold")
+
+filter(mixes_wide,sample =="sample_01")
+
+joined_wide <- bind_rows(results_wide,mixes_wide)
+joined_wide[is.na(joined_wide)] <- 0
+
+filter(joined_wide,sample=="sample_01")
+```
+```{r}
+summary(filter(purity_completeness, confidence == "0.0")$purity)
+```
+
+
+```{r}
+grahp_titles <- data_frame(sample = unique(joined_wide$sample)) %>%
+  mutate(name = str_replace(sample,"_"," "))
+```
+
+
+```{r creating PCA and scree plots for different samples, eval = T}
+
+pca_plots_crl_path <- "/mnt/users/haek/Master/results/diff_quality/pca_clr/pca_plots_clr/" #directory where pca plots with clr will be saved 
+scree_plots_crl_path <- "/mnt/users/haek/Master/results/diff_quality/pca_clr/scree_plots_clr/" #directory where scree plots with clr will be saved 
+pca_plot_u_clr_path <- "/mnt/users/haek/Master/results/diff_quality/pca_u_clr/pca_plots_u_clr/"  #directory where pca plots without clr will be saved 
+scree_plots_u_clr_path <- "/mnt/users/haek/Master/results/diff_quality/pca_u_clr/scree_plots_u_clr/" #directory where scree plots without clr will be saved 
+
+#the following for loop creates pca plots and screeplots for data with the CLR-transformation
+for (s in unique(joined_wide$sample)){
+  data <- filter(joined_wide,sample == s) %>%
+      column_to_rownames(var = "confidence") %>%
+      select(-c("sample"))
+  pca <- prcomp(as.data.frame(clr(data,n.pseudo = 1)))
+  results_pca <- as.data.frame(pca$x[,1:2]) %>% rownames_to_column(var = "sample_qual")
+  pca_plot <- ggplot(results_pca,aes(x=PC1,y=PC2))+ 
+    geom_text(aes(label = sample_qual)) +
+    labs(title = paste0("PCA plot of ",str_replace(s,"_"," ")," after CLR-transformation"))
+  
+  ggsave(paste0(pca_plots_crl_path,s,"_pca_plot.png"),pca_plot)
+  
+  pca_var <- tibble(PC = colnames(pca$rotation),sdev = pca$sdev,var_sum = pca$sdev^2/sum(pca$sdev^2))
+  scree <- ggplot(pca_var[1:7,],aes(x = PC,y = var_sum))+
+    geom_col(aes(fill = PC))+
+    labs(y="Fraction of variation explained",title = paste0("Scree plot for PCA on ",str_replace(s,"_"," "))) + 
+    scale_fill_manual(values = pals::glasbey(n=length(unique(results$sample))))
+  
+  ggsave(paste0(scree_plots_crl_path,s,"_scree_plot.png"),scree)
+}
+#rm(s,pca,pca_var,pca_plot,scree,data)
+
+
+```
+
+
+```{r}
+body(clr)
+```
+
+```{r}
+pca_plot
+```
+
+```{r}
+scree
+
+read_xs
+```
+

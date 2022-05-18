@@ -1,0 +1,76 @@
+---
+title: "Functions"
+author: "Halvor Ekeland"
+date: "4 4 2022"
+output: html_document
+---
+
+```{r}
+purity <- function(true_abd, predicted_abd, threshold = 0){
+  actual <- which(true_abd > 0) #creates vector of true/false based on the number of actuall reads in the mix are above ore below the treashold 
+  predicted <- which(predicted_abd > threshold) #creates vector of true/false based on the number of KB-classified reads in the mix are above ore below the treashold
+  TP <- sum(actual %in% predicted) #compares and sums the true/false vectors for species that were classifed correcly 
+  FP <- sum(!(predicted %in% actual)) #compars and sums the places where KB classified reads to a species that is not precent in the true sample
+  return(as.numeric(TP / (TP + FP))) #calculates purity 
+}
+```
+
+```{r}
+completeness <- function(true_abd, predicted_abd, threshold = 0){
+  true <- which(true_abd > 0) #creates vector of true/false based on the number of actuall reads in the mix are above ore below the treashold 
+  predicted <- which(predicted_abd > threshold) #creates vector of true/false based on the number of KB-classified reads in the mix are above ore below the treashold
+  TP <- sum(true %in% predicted) #compares and sums the true/false vectors for species that were classifed correcly 
+  FN <- sum(!(true %in% predicted)) #compars and sums the places where true reads to a species that is not precent in the predicted sample
+  return(as.numeric(TP / (TP + FN))) #calculates compleness 
+}
+```
+
+
+mean quality for reads in fastq file.
+teh txt2ascii function calcualtes the mean quality of all reads by finding the mean quality of base-calls in a read and then finding the mean of thoes. 
+
+```{r}
+txt2ascii <- function(txt,n){
+  
+    if(missing(n)) { #if test for n to make inputting number of rows optional 
+        n <- nrow(txt)
+    } 
+
+  mean_scores <- as.data.frame(matrix(NaN, nrow = n, ncol = 1)) #dataframe to be filed with the mean scores
+  colnames(mean_scores) <- "mean_score" #defining the name of the column 
+  
+  for (i in 1:n){    
+    mean_scores[i,1] <- mean(strtoi(charToRaw(as.character(txt[i,3])), 33L)) #function to calculate the mean score for each quality sequence
+  }
+  mean_all_scores <- mean(mean_scores[,1])
+  return(mean_all_scores) #returns the mean score data frame } #for-loop used to iterate through the first n number of rows 
+
+}
+```
+
+
+
+```{r}
+txt2ascii_random <- function(txt,n){
+  
+    if(missing(n)) { #if test for n to make inputting number of rows optional 
+        n <- nrow(txt)
+    } 
+
+  mean_scores <- data.frame() #dataframe to be filed with the mean scores
+   
+  
+  for (i in sample(1:nrow(txt),n,replace = F)){    
+    mean_scores <- rbind(mean_scores,mean(strtoi(charToRaw(as.character(txt[i,3])), 33L))) #function to calculate the mean score for each quality sequence
+  }
+  colnames(mean_scores) <- "mean_score" #defining the name of the column
+  mean_all_scores <- mean(mean_scores$mean_score)
+  return(mean_all_scores) #returns the mean score data frame } #for-loop used to iterate through the first n number of rows 
+
+}
+```
+
+```{r}
+save(purity,completeness,txt2ascii,txt2ascii_random,file = "/mnt/users/haek/Master/annet/functions.RData")
+```
+

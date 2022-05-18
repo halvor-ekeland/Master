@@ -1,0 +1,98 @@
+---
+title: "mixes_v2"
+author: "Halvor Ekeland"
+date: "24 1 2022"
+output: html_document
+---
+
+```{r packages, message=FALSE,warning=FALSE}
+library(tidyverse)
+library(microseq)
+```
+
+```{r}
+timestamp()
+#mixes <- slice(read.table("/mnt/users/haek/Master/mixes/mixes.txt",sep = "\t", header = T)) %>% subset(select = -ncol(read.table("/mnt/users/haek/Master/mixes/Mixes.txt",sep = "\t", header = T)))
+mixes <- as.data.frame(read_xlsx("/mnt/users/haek/Master/mixes/sample_overview.xlsx",sheet = 2))
+```
+
+```{r get reads from fastq files}
+paste0("loading reads start at: ",timestamp())
+R1_reads <- data.frame() #dataframes to be filled with R1 reads
+R2_reads <- data.frame() #dataframes to be filled with R1 reads
+
+for (j in 1:nrow(mixes)) {
+  if (sum(mixes[j,2:ncol(mixes)]) > 0) { #if-test to skip genomes that are not in any mix 
+    R1 <- readFastq(paste0("/mnt/SCRATCH/haek/art/",mixes[j,"species"],"1.fq")) %>% mutate(species = mixes[j,"species"]) #imports R1 reads for species j
+    R2 <- readFastq(paste0("/mnt/SCRATCH/haek/art/",mixes[j,"species"],"2.fq")) %>% mutate(species = mixes[j,"species"]) #imports R2 reads for species j
+    
+    R1_reads <- rbind(R1_reads,R1)
+    R2_reads <- rbind(R2_reads,R2)
+    rm(R1)
+    rm(R2)
+  }
+}
+paste0("loading reads stop at: ",timestamp())
+
+colnames(R1_reads) <- c("Header","Sequence","Quality","species")
+colnames(R2_reads) <- c("Header","Sequence","Quality","species")
+
+```
+
+```{r file paths and names}
+
+```
+
+
+```{r select reads for fastq file}
+n_reads_in_mix <- 10^6 #define the number of reads in the sample here!
+
+if (n_reads_in_mix == 10^5){
+  folder_path <- "/mnt/SCRATCH/haek/mixes/100k/" #add paths for one variety with a nummber of reads here
+  size_suffix <- "_100k_"
+}
+
+if (n_reads_in_mix == 10^6){
+  folder_path <- "/mnt/SCRATCH/haek/mixes/1m_new/" #add paths for one variety with a nummber of reads here
+  size_suffix <- "_1m_"
+}
+
+report_file_name <- paste0("/mnt/users/haek/Master/mixes/reports_mixes/report_mixes",size_suffix,".txt") #creates a file where compostion of the different sample fastq files is stated 
+
+
+
+for (i in 2:ncol(mixes)) { # mix i
+  mix_R1 <- data.frame()
+  mix_R2 <- data.frame()
+  for (j in 1:nrow(mixes)) { #genome/species j
+    if (mixes[j,i] > 0) {
+      relativ_abundance <- mixes[j,i]/100 #finds the relativ abundance for species J
+      n_reads_genome <- n_reads_in_mix*relativ_abundance #finds the number of reads of species j to be added to the fastq.fil for the mix i
+      
+      indx <- sample(nrow(filter(R1_reads,species == mixes[j,"species"])),n_reads_genome,replace = F) #crates a vector of intgers used to sample reads form the R1_reads and R2_reads dataframes of species J
+
+      mix_R1 <- rbind(mix_R1,slice(filter(R1_reads,species == mixes[j,"species"]),indx)) #selects and adds reads to the sample mix
+      mix_R2 <- rbind(mix_R2,slice(filter(R2_reads,species == mixes[j,"species"]),indx)) #selects and adds reads to the sample mix
+
+    }
+  }
+  if (nrow(mix_R1) && nrow(mix_R2) > 0) {
+
+    writeFastq(subset(mix_R1,select = -species),paste0(folder_path,colnames(mixes)[i],size_suffix,"R1.fq")) #creates a fastafile for the mix i with the name sample_i_R1.fq
+    writeFastq(subset(mix_R2,select = -species),paste0(folder_path,colnames(mixes)[i],size_suffix,"R2.fq")) #creates a fastafile for the mix i with the name sample_i.R2.fq
+    
+
+    write(paste0("\n","---------------",colnames(mixes)[i],"---------------"),report_file_name, append = T) #creates raport 
+    write(paste0(timestamp()),report_file_name, append = T)
+    write(paste0("----R1----"),report_file_name, append = T)
+    write.table(as.data.frame(table(mix_R1$species)),report_file_name, append = T)
+    write(paste0("----R2----"),report_file_name, append = T)
+    write.table(as.data.frame(table(mix_R2$species)),report_file_name, append = T)
+  }
+}
+
+```
+
+
+
+
